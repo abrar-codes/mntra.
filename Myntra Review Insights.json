@@ -1,0 +1,296 @@
+{
+  "name": "Myntra Review Insights",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "bcbd0610-226a-4d95-a498-ec41eaef3227",
+      "name": "Start (Manual Button)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-4o-mini"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a research assistant. Reply with a JSON array of 5-8 credible, publicly accessible webpage URLs that contain genuine customer reviews of Myntra (the Indian fashion e-commerce platform). Prefer review platforms and forums such as Trustpilot, Sitejabber, MouthShut, ConsumerAffairs, Reddit threads, Quora discussions, and app store review pages. Reply with ONLY the JSON array of URL strings, no markdown fences, no commentary."
+            },
+            {
+              "content": "List down credible URL sources of reviews about Myntra"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 600
+        }
+      },
+      "id": "95c4dd23-3c2c-4950-98d5-5e95595cbde5",
+      "name": "AI: List Myntra Review Sources",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $json.output?.[0]?.content?.[0]?.text ?? '';\nlet urls = [];\ntry {\n  const parsed = typeof text === 'string' ? JSON.parse(text) : text;\n  if (Array.isArray(parsed)) urls = parsed;\n} catch (e) {\n  urls = String(text).match(/https?:\\/\\/[^\\s\"'\\]\\\\]+/g) || [];\n}\nurls = [...new Set(urls.map(u => String(u).trim().replace(/[),.;]+$/, '')).filter(u => u.startsWith('http')))];\nreturn urls.map(url => ({ json: { url } }));"
+      },
+      "id": "00563e52-d008-491f-9fcf-8d1479784595",
+      "name": "Extract URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "scrape",
+        "url": "={{ $json.url }}",
+        "scrapeOptions": {
+          "options": {
+            "formats": {
+              "format": [
+                {}
+              ]
+            },
+            "headers": {}
+          }
+        },
+        "requestOptions": {}
+      },
+      "id": "e735f120-687a-46bc-aa1b-e212ac8976e0",
+      "name": "Firecrawl: Scrape Review Pages",
+      "type": "@mendable/n8n-nodes-firecrawl.firecrawl",
+      "typeVersion": 1,
+      "position": [
+        672,
+        0
+      ],
+      "credentials": {
+        "firecrawlApi": {
+          "id": "g7RPTa54M0XshEnk",
+          "name": "Firecrawl API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst parts = items.map((item, i) => {\n  const j = item.json || {};\n  const data = j.data || {};\n  const url = (data.metadata && data.metadata.sourceURL) || (j.metadata && j.metadata.sourceURL) || j.url || \"unknown\";\n  const text = String(data.markdown || j.markdown || j.text || \"\").slice(0, 2500);\n  return \"--- Source \" + (i + 1) + \": \" + url + \" ---\\n\" + text;\n});\nconst body = parts.join(\"\\n\\n\").slice(0, 15000).trim() || \"No review content was scraped.\";\nreturn [{ json: { prompt: body } }];"
+      },
+      "id": "53126aaa-1eb8-4bae-87d6-57f23e502f6d",
+      "name": "Build Summary Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        784,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-4o-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a customer insights analyst. You receive scraped review content about Myntra from multiple platforms. Produce: 1) an overall summary, 2) top recurring positive themes, 3) top recurring complaints, 4) notable differences between platforms, 5) actionable recommendations for the business. Use clear markdown headings and bullet points.",
+              "role": "system"
+            },
+            {
+              "content": "={{ $json.prompt }}"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 2000
+        }
+      },
+      "id": "32925a68-a593-47ea-b514-95b110bd7679",
+      "name": "AI: Summarize & Insights",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [
+        896,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "insights-report",
+              "name": "insightsReport",
+              "value": "={{ $(\"AI: Summarize & Insights\").first().json.message.content }}",
+              "type": "string"
+            },
+            {
+              "id": "sources-scraped",
+              "name": "sourcesScraped",
+              "value": "={{ $(\"Firecrawl: Scrape Review Pages\").all().filter(i => !i.json.error).map(i => i.json.metadata?.sourceURL || i.json.url || \"unknown\").join(\"\\n\") }}",
+              "type": "string"
+            },
+            {
+              "id": "sources-failed",
+              "name": "sourcesFailed",
+              "value": "={{ $(\"Firecrawl: Scrape Review Pages\").all().filter(i => i.json.error).map(i => (i.json.metadata?.sourceURL || i.json.url || \"unknown\") + \" (\" + (i.json.error?.message || i.json.error) + \")\").join(\"\\n\") || \"None\" }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "339682d1-8d2e-41ac-b507-195eaf2e1f5c",
+      "name": "View Insights Report",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1120,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "myntra-review-insights",
+        "options": {}
+      },
+      "id": "558675b9-3de7-4895-8fd3-56d1d51ca158",
+      "name": "Start Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        192
+      ],
+      "webhookId": "fb9dba13-a0e9-408e-8226-89699244cb49"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start (Manual Button)": {
+      "main": [
+        [
+          {
+            "node": "AI: List Myntra Review Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: List Myntra Review Sources": {
+      "main": [
+        [
+          {
+            "node": "Extract URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract URLs": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl: Scrape Review Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl: Scrape Review Pages": {
+      "main": [
+        [
+          {
+            "node": "Build Summary Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary Prompt": {
+      "main": [
+        [
+          {
+            "node": "AI: Summarize & Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Summarize & Insights": {
+      "main": [
+        [
+          {
+            "node": "View Insights Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Webhook": {
+      "main": [
+        [
+          {
+            "node": "AI: List Myntra Review Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "1963bfe8-4849-402b-95f1-d3b6ecd2ffd3",
+  "meta": {
+    "instanceId": "9aecded2a8d1fbd4c435e4df8768793410deb8760be0b982e25f7d6b4e36982b"
+  },
+  "nodeGroups": [],
+  "id": "NO8nmtKssbdKe7HG",
+  "tags": []
+}
